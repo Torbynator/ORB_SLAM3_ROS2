@@ -5,10 +5,10 @@
 using std::placeholders::_1;
 using std::placeholders::_2;
 
-StereoSlamNode::StereoSlamNode(ORB_SLAM3::System* pSLAM, const string &strSettingsFile, const string &strDoRectify)
-:   Node("ORB_SLAM3_ROS2"),
-    m_SLAM(pSLAM)
+StereoSlamNode::StereoSlamNode(const string &vocFile, const string &strSettingsFile, const string &strDoRectify)
+:   Node("ORB_SLAM3_ROS2")
 {
+    m_SLAM = new ORB_SLAM3::System(vocFile, strSettingsFile, ORB_SLAM3::System::STEREO, true);
     stringstream ss(strDoRectify);
     ss >> boolalpha >> doRectify;
 
@@ -48,11 +48,19 @@ StereoSlamNode::StereoSlamNode(ORB_SLAM3::System* pSLAM, const string &strSettin
         cv::initUndistortRectifyMap(K_r,D_r,R_r,P_r.rowRange(0,3).colRange(0,3),cv::Size(cols_r,rows_r),CV_32F,M1r,M2r);
     }
 
-    left_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(shared_ptr<rclcpp::Node>(this), "camera/left");
-    right_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(shared_ptr<rclcpp::Node>(this), "camera/right");
+    std::cout << "init subs" << std::endl;
+    //left_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(shared_ptr<rclcpp::Node>(this), "camera/left");
+    left_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/left");
+    std::cout << "camera left subscribed" << std::endl;
+    //right_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(shared_ptr<rclcpp::Node>(this), "camera/right");
+    right_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/right");
+    std::cout << "camera right subscribed" << std::endl;
 
+    std::cout << "init syncs" << std::endl;
     syncApproximate = std::make_shared<message_filters::Synchronizer<approximate_sync_policy> >(approximate_sync_policy(10), *left_sub, *right_sub);
+    std::cout << "sync approximate" << std::endl;
     syncApproximate->registerCallback(&StereoSlamNode::GrabStereo, this);
+    std::cout << "sync initialized" << std::endl;
 }
 
 StereoSlamNode::~StereoSlamNode()
@@ -66,13 +74,16 @@ StereoSlamNode::~StereoSlamNode()
 
 void StereoSlamNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMsg::SharedPtr msgRight)
 {
+    //std::cout << "grabbing image" << std::endl;
     // Copy the ros rgb image message to cv::Mat.
     try
     {
         cv_ptrLeft = cv_bridge::toCvShare(msgLeft);
+        //cv::imshow("test window left", cv_ptrLeft->image);
     }
     catch (cv_bridge::Exception& e)
     {
+        std::cout << "cv_bridge left error" << std::endl;
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         return;
     }
@@ -81,9 +92,11 @@ void StereoSlamNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMs
     try
     {
         cv_ptrRight = cv_bridge::toCvShare(msgRight);
+        //cv::imshow("test window right", cv_ptrRight->image);
     }
     catch (cv_bridge::Exception& e)
     {
+        std::cout << "cv_bridge right error" << std::endl;
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         return;
     }
@@ -96,6 +109,8 @@ void StereoSlamNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMs
     }
     else
     {
+        //std::cout << "doing SLAM" << std::endl;
+        //std::cout << Utility::StampToSec(msgLeft->header.stamp) << std::endl;
         m_SLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, Utility::StampToSec(msgLeft->header.stamp));
     }
 }

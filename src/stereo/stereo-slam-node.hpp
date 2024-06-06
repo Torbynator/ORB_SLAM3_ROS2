@@ -20,7 +20,7 @@
 class StereoSlamNode : public rclcpp::Node
 {
 public:
-    StereoSlamNode(ORB_SLAM3::System* pSLAM, const string &strSettingsFile, const string &strDoRectify);
+    StereoSlamNode(const string &vocFile, const string &strSettingsFile, const string &strDoRectify);
 
     ~StereoSlamNode();
 
@@ -29,7 +29,6 @@ private:
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> approximate_sync_policy;
 
     void GrabStereo(const sensor_msgs::msg::Image::SharedPtr msgRGB, const sensor_msgs::msg::Image::SharedPtr msgD);
-
     ORB_SLAM3::System* m_SLAM;
 
     bool doRectify;

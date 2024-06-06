@@ -8,7 +8,7 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
 :   Node("ORB_SLAM3_ROS2")
 {
     m_SLAM = pSLAM;
-    // std::cout << "slam changed" << std::endl;
+    std::cout << "subscribing to image" << std::endl;
     m_image_subscriber = this->create_subscription<ImageMsg>(
         "camera",
         10,
@@ -18,6 +18,7 @@ MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
 
 MonocularSlamNode::~MonocularSlamNode()
 {
+    std::cout << "shutting down" << std::endl;
     // Stop all threads
     m_SLAM->Shutdown();
 
@@ -27,9 +28,10 @@ MonocularSlamNode::~MonocularSlamNode()
 
 void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
 {
-    // Copy the ros image message to cv::Mat.
+    //Copy the ros image message to cv::Mat.
     try
     {
+    	std::cout << "trying to copy image" << std::endl;
         m_cvImPtr = cv_bridge::toCvCopy(msg);
     }
     catch (cv_bridge::Exception& e)
