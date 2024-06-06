@@ -287,24 +287,25 @@ void StereoInertialNode::Publish(){
     geometry_msgs::msg::PoseStamped pose_msg;
     pose_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
     pose_msg.header.frame_id = "world";
-    std::vector<ORB_SLAM3::KeyFrame*> KeyFrames = SLAM_->GetAllKeyFrames();
-    Eigen::Matrix4<float> Twc = KeyFrames.back()->GetPoseInverse().matrix();
-    std::cout << KeyFrames.size() << std::endl;
+    
+    
 
-
-    pose_msg.pose.position.x = Twc.coeff(0,3);
-    pose_msg.pose.position.y = Twc.coeff(1,3);
-    pose_msg.pose.position.z = Twc.coeff(2,3);
-    // pose_msg.pose.orientation.x = quat.x();
-    // pose_msg.pose.orientation.y = quat.y();
-    // pose_msg.pose.orientation.z = quat.z();
-    // pose_msg.pose.orientation.w = quat.w();
-
+    if(pose.data()){
+        Eigen::Matrix<double, 7, 1, 0, 7, 1> quaternion = ORB_SLAM3::Converter::toSE3Quat(pose).inverse().toVector();
+        pose_msg.pose.position.x = quaternion[0];
+        pose_msg.pose.position.y = quaternion[1];
+        pose_msg.pose.position.z = quaternion[2];
+        pose_msg.pose.orientation.x = quaternion[3];
+        pose_msg.pose.orientation.y = quaternion[4];
+        pose_msg.pose.orientation.z = quaternion[5];
+        pose_msg.pose.orientation.w = quaternion[6];
+    }
     pubPos_->publish(pose_msg);
 
 
 
     //publish path
+    std::vector<ORB_SLAM3::KeyFrame*> KeyFrames = SLAM_->GetAllKeyFrames();
     pcl::PointCloud<pcl::PointXYZ>::Ptr tmp2(new pcl::PointCloud<pcl::PointXYZ>);
     PointCloudMsg PathMessage;
     tmp2->width = 0;
