@@ -58,10 +58,20 @@ StereoInertialNode::StereoInertialNode(ORB_SLAM3::System *SLAM, const string &st
     }
 
     subImu_ = this->create_subscription<ImuMsg>("imu", 1000, std::bind(&StereoInertialNode::GrabImu, this, _1));
-    subImgLeft_ = this->create_subscription<ImageMsg>("camera/left", 100, std::bind(&StereoInertialNode::GrabImageLeft, this, _1));
-    subImgRight_ = this->create_subscription<ImageMsg>("camera/right", 100, std::bind(&StereoInertialNode::GrabImageRight, this, _1));
+    //subImgLeft_ = this->create_subscription<ImageMsg>("camera/left", 100, std::bind(&StereoInertialNode::GrabImageLeft, this, _1));
+    subImgLeft_ = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/left");
+    //subImgRight_ = this->create_subscription<ImageMsg>("camera/right", 100, std::bind(&StereoInertialNode::GrabImageRight, this, _1));
+    subImgRight_ = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/right");
 
+    pubPointCloud_ = this->create_publisher<PointCloudMsg>("/SLAM/PointCloud", 2);
+    pubPath = this->create_publisher<PointCloudMsg>("/SLAM/Path", 2);
+    pubPos_ = this->create_publisher<PosMsg>("/SLAM/Position", 2);
+
+    syncApproximate = std::make_shared<message_filters::Synchronizer<approximate_sync_policy> >(approximate_sync_policy(10), *subImgLeft_, *subImgRight_);
+    syncApproximate->registerCallback(&StereoInertialNode::GrabStereo, this);
     syncThread_ = new std::thread(&StereoInertialNode::SyncWithImu, this);
+    publishThread_ = this->create_wall_timer(2000ms, std::bind(&StereoInertialNode::Publish, this));
+
 }
 
 StereoInertialNode::~StereoInertialNode()
@@ -84,8 +94,9 @@ void StereoInertialNode::GrabImu(const ImuMsg::SharedPtr msg)
     bufMutex_.unlock();
 }
 
-void StereoInertialNode::GrabImageLeft(const ImageMsg::SharedPtr msgLeft)
+void StereoInertialNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMsg::SharedPtr msgRight)
 {
+    //grab left image
     bufMutexLeft_.lock();
 
     if (!imgLeftBuf_.empty())
@@ -93,10 +104,8 @@ void StereoInertialNode::GrabImageLeft(const ImageMsg::SharedPtr msgLeft)
     imgLeftBuf_.push(msgLeft);
 
     bufMutexLeft_.unlock();
-}
 
-void StereoInertialNode::GrabImageRight(const ImageMsg::SharedPtr msgRight)
-{
+    //grab right image
     bufMutexRight_.lock();
 
     if (!imgRightBuf_.empty())
@@ -105,6 +114,28 @@ void StereoInertialNode::GrabImageRight(const ImageMsg::SharedPtr msgRight)
 
     bufMutexRight_.unlock();
 }
+
+// void StereoInertialNode::GrabImageLeft(const ImageMsg::SharedPtr msgLeft)
+// {
+//     bufMutexLeft_.lock();
+
+//     if (!imgLeftBuf_.empty())
+//         imgLeftBuf_.pop();
+//     imgLeftBuf_.push(msgLeft);
+
+//     bufMutexLeft_.unlock();
+// }
+
+// void StereoInertialNode::GrabImageRight(const ImageMsg::SharedPtr msgRight)
+// {
+//     bufMutexRight_.lock();
+
+//     if (!imgRightBuf_.empty())
+//         imgRightBuf_.pop();
+//     imgRightBuf_.push(msgRight);
+
+//     bufMutexRight_.unlock();
+// }
 
 cv::Mat StereoInertialNode::GetImage(const ImageMsg::SharedPtr msg)
 {
@@ -207,10 +238,95 @@ void StereoInertialNode::SyncWithImu()
                 cv::remap(imRight, imRight, M1r_, M2r_, cv::INTER_LINEAR);
             }
 
-            SLAM_->TrackStereo(imLeft, imRight, tImLeft, vImuMeas);
+            pose = SLAM_->TrackStereo(imLeft, imRight, tImLeft, vImuMeas);
 
             std::chrono::milliseconds tSleep(1);
             std::this_thread::sleep_for(tSleep);
         }
     }
+}
+
+void StereoInertialNode::Publish(){
+    
+
+    // POINT CLOUD
+    //std::cout << "trying to get map" << std::endl;
+    std::vector<ORB_SLAM3::MapPoint*> pActiveMapPoints = SLAM_->GetAllMapPoints();
+    if(pActiveMapPoints.empty()){
+        cout << endl << "Vector of map points pActiveMap is empty!" << endl;
+        return;
+    }
+
+    //std::cout << "got map" << std::endl;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
+    //std::cout << "created tmp" << std::endl;
+    PointCloudMsg message;
+    //std::cout << "created message" << std::endl;
+    tmp->width = 0;
+    tmp->height = 1;
+    tmp->is_dense = false;
+    tmp->points.resize(tmp->width * tmp->height);
+    tmp->header.frame_id = "world";
+    //std::cout << "set tmp parameters" << std::endl;
+    for (int i = 0; i < pActiveMapPoints.size(); i++)
+    {
+        Eigen::Vector3f point = pActiveMapPoints[i]->GetWorldPos();
+        pcl::PointXYZ pt;
+        pt.x = point.x();
+        pt.y = point.y();
+        pt.z = point.z();
+        tmp->points.push_back(pt);
+        tmp->width++;
+    }
+    
+    //std::cout << "converted map" << std::endl;
+    pcl::toROSMsg(*tmp.get(), message);
+    pubPointCloud_->publish(message);
+	
+    // // Publish pose data
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+    pose_msg.header.frame_id = "world";
+    std::vector<ORB_SLAM3::KeyFrame*> KeyFrames = SLAM_->GetAllKeyFrames();
+    Eigen::Matrix4<float> Twc = KeyFrames.back()->GetPoseInverse().matrix();
+    std::cout << KeyFrames.size() << std::endl;
+
+
+    pose_msg.pose.position.x = Twc.coeff(0,3);
+    pose_msg.pose.position.y = Twc.coeff(1,3);
+    pose_msg.pose.position.z = Twc.coeff(2,3);
+    // pose_msg.pose.orientation.x = quat.x();
+    // pose_msg.pose.orientation.y = quat.y();
+    // pose_msg.pose.orientation.z = quat.z();
+    // pose_msg.pose.orientation.w = quat.w();
+
+    pubPos_->publish(pose_msg);
+
+
+
+    //publish path
+    pcl::PointCloud<pcl::PointXYZ>::Ptr tmp2(new pcl::PointCloud<pcl::PointXYZ>);
+    PointCloudMsg PathMessage;
+    tmp2->width = 0;
+    tmp2->height = 1;
+    tmp2->is_dense = false;
+    tmp2->points.resize(tmp2->width * tmp2->height);
+    tmp2->header.frame_id = "world";
+    for (int i = 0; i < KeyFrames.size(); i++)
+    {
+        Eigen::Vector3<float> point = KeyFrames[i]->GetCameraCenter();
+        pcl::PointXYZ pt;
+        pt.x = point(0);
+        pt.y = point(1);
+        pt.z = point(2);
+        tmp2->points.push_back(pt);
+        tmp2->width++;
+    }
+    
+    //std::cout << "converted map" << std::endl;
+    pcl::toROSMsg(*tmp2.get(), PathMessage);
+    pubPath->publish(PathMessage);
+
+
+
 }

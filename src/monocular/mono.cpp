@@ -27,7 +27,9 @@ int main(int argc, char **argv)
     auto node = std::make_shared<MonocularSlamNode>(&SLAM);
     std::cout << "============================ " << std::endl;\
 
+    std::cout << "spinning node" << std::endl;
     rclcpp::spin(node);
+    std::cout << "shutting down" << std::endl;
     rclcpp::shutdown();
 
     return 0;
