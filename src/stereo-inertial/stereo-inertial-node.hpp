@@ -2,6 +2,7 @@
 #define __STEREO_INERTIAL_NODE_HPP__
 
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -22,6 +23,7 @@
 
 #include "utility.hpp"
 
+using StrMsg = std_msgs::msg::String;
 using ImuMsg = sensor_msgs::msg::Imu;
 using ImageMsg = sensor_msgs::msg::Image;
 using PointCloudMsg = sensor_msgs::msg::PointCloud2;
@@ -39,6 +41,7 @@ public:
 
 private:
     void GrabImu(const ImuMsg::SharedPtr msg);
+    void GetCommand(const StrMsg::SharedPtr msg);
     void GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMsg::SharedPtr msgRight);
     // void GrabImageLeft(const ImageMsg::SharedPtr msgLeft);
     // void GrabImageRight(const ImageMsg::SharedPtr msgRight);
@@ -47,6 +50,7 @@ private:
     void Publish();
 
     rclcpp::Subscription<ImuMsg>::SharedPtr   subImu_;
+    rclcpp::Subscription<StrMsg>::SharedPtr   subCommands_;
     // rclcpp::Subscription<ImageMsg>::SharedPtr subImgLeft_;
     // rclcpp::Subscription<ImageMsg>::SharedPtr subImgRight_;
     std::shared_ptr<message_filters::Subscriber<ImageMsg> > subImgLeft_;

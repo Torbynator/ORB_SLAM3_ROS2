@@ -55,12 +55,18 @@ add_executable(stereo
 )
 ament_target_dependencies(stereo rclcpp sensor_msgs cv_bridge message_filters
 ORB_SLAM3 Pangolin)
+target_link_libraries(stereo
+  opencv_calib3d
+)
 
 add_executable(stereo-inertial
   src/stereo-inertial/stereo-inertial.cpp
   src/stereo-inertial/stereo-inertial-node.cpp
 )
 ament_target_dependencies(stereo-inertial rclcpp message_filters sensor_msgs PCL pcl_conversions geometry_msgs cv_bridge ORB_SLAM3 Pangolin)
+target_link_libraries(stereo-inertial
+  opencv_calib3d
+)
 
 install(TARGETS mono rgbd stereo stereo-inertial
   DESTINATION lib/${PROJECT_NAME})

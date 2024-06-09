@@ -53,11 +53,16 @@ StereoInertialNode::StereoInertialNode(ORB_SLAM3::System *SLAM, const string &st
             assert(0);
         }
 
+        pose.rotX(0);
+        pose.rotY(0);
+        pose.rotZ(0);
+
         cv::initUndistortRectifyMap(K_l, D_l, R_l, P_l.rowRange(0, 3).colRange(0, 3), cv::Size(cols_l, rows_l), CV_32F, M1l_, M2l_);
         cv::initUndistortRectifyMap(K_r, D_r, R_r, P_r.rowRange(0, 3).colRange(0, 3), cv::Size(cols_r, rows_r), CV_32F, M1r_, M2r_);
     }
 
     subImu_ = this->create_subscription<ImuMsg>("imu", 1000, std::bind(&StereoInertialNode::GrabImu, this, _1));
+    subCommands_ = this->create_subscription<StrMsg>("SLAM/Commands", 10, std::bind(&StereoInertialNode::GetCommand, this, _1));
     //subImgLeft_ = this->create_subscription<ImageMsg>("camera/left", 100, std::bind(&StereoInertialNode::GrabImageLeft, this, _1));
     subImgLeft_ = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/left");
     //subImgRight_ = this->create_subscription<ImageMsg>("camera/right", 100, std::bind(&StereoInertialNode::GrabImageRight, this, _1));
@@ -92,6 +97,10 @@ void StereoInertialNode::GrabImu(const ImuMsg::SharedPtr msg)
     bufMutex_.lock();
     imuBuf_.push(msg);
     bufMutex_.unlock();
+}
+
+void StereoInertialNode::GetCommand(const StrMsg::SharedPtr msg){
+    
 }
 
 void StereoInertialNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMsg::SharedPtr msgRight)
@@ -282,16 +291,19 @@ void StereoInertialNode::Publish(){
     //std::cout << "converted map" << std::endl;
     pcl::toROSMsg(*tmp.get(), message);
     pubPointCloud_->publish(message);
-	
+	std::cout << "Published map" << std::endl;
+
+
     // // Publish pose data
     geometry_msgs::msg::PoseStamped pose_msg;
     pose_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
     pose_msg.header.frame_id = "world";
     
     
-
-    if(pose.data()){
+    std::cout << "getting pose" << std::endl;
+    if(SLAM_->isFinished() && !SLAM_->isLost()){
         Eigen::Matrix<double, 7, 1, 0, 7, 1> quaternion = ORB_SLAM3::Converter::toSE3Quat(pose).inverse().toVector();
+        std::cout << "got pose" << std::endl;
         pose_msg.pose.position.x = quaternion[0];
         pose_msg.pose.position.y = quaternion[1];
         pose_msg.pose.position.z = quaternion[2];
@@ -299,13 +311,19 @@ void StereoInertialNode::Publish(){
         pose_msg.pose.orientation.y = quaternion[4];
         pose_msg.pose.orientation.z = quaternion[5];
         pose_msg.pose.orientation.w = quaternion[6];
+        pubPos_->publish(pose_msg);
+        std::cout << "Published pose" << std::endl;
     }
-    pubPos_->publish(pose_msg);
 
+    
 
 
     //publish path
     std::vector<ORB_SLAM3::KeyFrame*> KeyFrames = SLAM_->GetAllKeyFrames();
+        if(KeyFrames.empty()){
+        cout << endl << "Vector of KeyFrames is empty!" << endl;
+        return;
+    }
     pcl::PointCloud<pcl::PointXYZ>::Ptr tmp2(new pcl::PointCloud<pcl::PointXYZ>);
     PointCloudMsg PathMessage;
     tmp2->width = 0;
@@ -327,7 +345,7 @@ void StereoInertialNode::Publish(){
     //std::cout << "converted map" << std::endl;
     pcl::toROSMsg(*tmp2.get(), PathMessage);
     pubPath->publish(PathMessage);
-
+    std::cout << "Published path" << std::endl;
 
 
 }
