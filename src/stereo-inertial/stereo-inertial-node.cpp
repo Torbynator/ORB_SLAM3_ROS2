@@ -100,7 +100,51 @@ void StereoInertialNode::GrabImu(const ImuMsg::SharedPtr msg)
 void StereoInertialNode::GetCommand(const StrMsg::SharedPtr msg){
     unsigned int end_command = msg->data.find_first_of(" ");
     std::string command = msg->data.substr(0,end_command);
-    std::cout << command << std::endl;
+    std::string argument = msg->data.substr(end_command+1, msg->data.find_first_of(" ",end_command));
+    
+    std::cout << "Received command: "<< command << " with argument: " << argument << std::endl;
+
+    if(command== "SaveMap"){
+        if(argument.size()>1){
+            SLAM_->SavePointCloud(argument);
+        }
+        else{
+            std::cout << "enter file path after command" << std::endl;
+        }
+    }
+    else if(command == "LoadMap"){
+        if(argument.size()>1){
+            SLAM_->LoadMap(argument);
+        }
+        else{
+            std::cout << "enter file path after command" << std::endl;
+        }
+    }
+    else if(command == "Shutdown"){
+        // // Delete sync thread
+        // syncThread_->join();
+        // delete syncThread_;
+        SLAM_->DeactivateLocalizationMode();
+
+        // Stop all threads
+        SLAM_->Shutdown();
+
+        // Save camera trajectory
+        SLAM_->SaveTrajectoryEuRoC("CameraTrajectory.txt");
+        SLAM_->SaveKeyFrameTrajectoryEuRoC("KeyFrameTrajectory.txt");
+    }
+    else if(command == "LocalizationMode"){
+        SLAM_->ActivateLocalizationMode();
+    }
+    else if(command == "TrackingMode"){
+        SLAM_->DeactivateLocalizationMode();
+    }
+    else if(command == "Reset"){
+        SLAM_->Reset();
+    }
+    else{
+        std::cout << "Error: Enter valid command: [Shutdown; LocalizationMode; TrackingMode; Reset]" << std::endl;
+    }
 }
 
 void StereoInertialNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMsg::SharedPtr msgRight)
