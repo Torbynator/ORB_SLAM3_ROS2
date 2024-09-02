@@ -53,8 +53,7 @@ add_executable(stereo
   src/stereo/stereo.cpp
   src/stereo/stereo-slam-node.cpp
 )
-ament_target_dependencies(stereo rclcpp sensor_msgs cv_bridge message_filters
-ORB_SLAM3 Pangolin)
+ament_target_dependencies(stereo rclcpp message_filters sensor_msgs PCL pcl_conversions geometry_msgs cv_bridge ORB_SLAM3 Pangolin)
 target_link_libraries(stereo
   opencv_calib3d
 )

@@ -1,21 +1,29 @@
 #include "stereo-slam-node.hpp"
 
-#include<opencv2/core/core.hpp>
+#include <opencv2/core/core.hpp>
 
 using std::placeholders::_1;
-using std::placeholders::_2;
 
-StereoSlamNode::StereoSlamNode(const string &vocFile, const string &strSettingsFile, const string &strDoRectify)
-:   Node("ORB_SLAM3_ROS2")
+StereoSlamNode::StereoSlamNode(ORB_SLAM3::System *SLAM, const string &strSettingsFile, const string &strDoRectify, const string &strDoEqual) :
+    Node("ORB_SLAM3_ROS2"),
+    SLAM_(SLAM)
 {
-    m_SLAM = new ORB_SLAM3::System(vocFile, strSettingsFile, ORB_SLAM3::System::STEREO, true);
-    stringstream ss(strDoRectify);
-    ss >> boolalpha >> doRectify;
+    stringstream ss_rec(strDoRectify);
+    ss_rec >> boolalpha >> doRectify_;
 
-    if (doRectify){
+    stringstream ss_eq(strDoEqual);
+    ss_eq >> boolalpha >> doEqual_;
 
+    bClahe_ = doEqual_;
+    std::cout << "Rectify: " << doRectify_ << std::endl;
+    std::cout << "Equal: " << doEqual_ << std::endl;
+
+    if (doRectify_)
+    {
+        // Load settings related to stereo calibration
         cv::FileStorage fsSettings(strSettingsFile, cv::FileStorage::READ);
-        if(!fsSettings.isOpened()){
+        if (!fsSettings.isOpened())
+        {
             cerr << "ERROR: Wrong path to settings" << endl;
             assert(0);
         }
@@ -38,79 +46,324 @@ StereoSlamNode::StereoSlamNode(const string &vocFile, const string &strSettingsF
         int rows_r = fsSettings["RIGHT.height"];
         int cols_r = fsSettings["RIGHT.width"];
 
-        if(K_l.empty() || K_r.empty() || P_l.empty() || P_r.empty() || R_l.empty() || R_r.empty() || D_l.empty() || D_r.empty() ||
-                rows_l==0 || rows_r==0 || cols_l==0 || cols_r==0){
+        if (K_l.empty() || K_r.empty() || P_l.empty() || P_r.empty() || R_l.empty() || R_r.empty() || D_l.empty() || D_r.empty() ||
+            rows_l == 0 || rows_r == 0 || cols_l == 0 || cols_r == 0)
+        {
             cerr << "ERROR: Calibration parameters to rectify stereo are missing!" << endl;
             assert(0);
         }
 
-        cv::initUndistortRectifyMap(K_l,D_l,R_l,P_l.rowRange(0,3).colRange(0,3),cv::Size(cols_l,rows_l),CV_32F,M1l,M2l);
-        cv::initUndistortRectifyMap(K_r,D_r,R_r,P_r.rowRange(0,3).colRange(0,3),cv::Size(cols_r,rows_r),CV_32F,M1r,M2r);
+        pose = Sophus::SE3f::rotX(0);
+
+        cv::initUndistortRectifyMap(K_l, D_l, R_l, P_l.rowRange(0, 3).colRange(0, 3), cv::Size(cols_l, rows_l), CV_32F, M1l_, M2l_);
+        cv::initUndistortRectifyMap(K_r, D_r, R_r, P_r.rowRange(0, 3).colRange(0, 3), cv::Size(cols_r, rows_r), CV_32F, M1r_, M2r_);
     }
 
-    std::cout << "init subs" << std::endl;
-    //left_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(shared_ptr<rclcpp::Node>(this), "camera/left");
-    left_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/left");
-    std::cout << "camera left subscribed" << std::endl;
-    //right_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(shared_ptr<rclcpp::Node>(this), "camera/right");
-    right_sub = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/right");
-    std::cout << "camera right subscribed" << std::endl;
+    subCommands_ = this->create_subscription<StrMsg>("SLAM/Commands", 10, std::bind(&StereoSlamNode::GetCommand, this, _1));
+    //subImgLeft_ = this->create_subscription<ImageMsg>("camera/left", 100, std::bind(&StereoSlamNode::GrabImageLeft, this, _1));
+    subImgLeft_ = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/left");
+    //subImgRight_ = this->create_subscription<ImageMsg>("camera/right", 100, std::bind(&StereoSlamNode::GrabImageRight, this, _1));
+    subImgRight_ = std::make_shared<message_filters::Subscriber<ImageMsg> >(this, "camera/right");
 
-    std::cout << "init syncs" << std::endl;
-    syncApproximate = std::make_shared<message_filters::Synchronizer<approximate_sync_policy> >(approximate_sync_policy(10), *left_sub, *right_sub);
-    std::cout << "sync approximate" << std::endl;
+    pubPointCloud_ = this->create_publisher<PointCloudMsg>("/SLAM/PointCloud", 2);
+    pubPath = this->create_publisher<PointCloudMsg>("/SLAM/Path", 2);
+    pubPos_ = this->create_publisher<PosMsg>("/SLAM/Position", 2);
+
+    syncApproximate = std::make_shared<message_filters::Synchronizer<approximate_sync_policy> >(approximate_sync_policy(10), *subImgLeft_, *subImgRight_);
     syncApproximate->registerCallback(&StereoSlamNode::GrabStereo, this);
-    std::cout << "sync initialized" << std::endl;
+    syncThread_ = new std::thread(&StereoSlamNode::SyncWithImu, this);
+    publishThread_ = this->create_wall_timer(2000ms, std::bind(&StereoSlamNode::Publish, this));
+
 }
 
 StereoSlamNode::~StereoSlamNode()
 {
-    // Stop all threads
-    m_SLAM->Shutdown();
+    // Delete sync thread
+    syncThread_->join();
+    delete syncThread_;
 
-    // Save camera trajectory
-    m_SLAM->SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+    // Stop all threads
+    SLAM_->Shutdown();
+
+    SLAM_->SaveTrajectoryEuRoC("CameraTrajectory.txt");
+    SLAM_->SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+}
+
+
+void StereoSlamNode::GetCommand(const StrMsg::SharedPtr msg){
+    unsigned int end_command = msg->data.find_first_of(" ");
+    std::string command = msg->data.substr(0,end_command);
+    std::string argument = msg->data.substr(end_command+1, msg->data.find_first_of(" ",end_command));
+    
+    std::cout << "Received command: "<< command << " with argument: " << argument << std::endl;
+
+    // if(command== "SaveMap"){
+    //     if(argument.size()>1){
+    //         SLAM_->SavePointCloud(argument);
+    //     }
+    //     else{
+    //         std::cout << "enter file path after command" << std::endl;
+    //     }
+    // }
+    // else if(command == "LoadMap"){
+    //     if(argument.size()>1){
+    //         SLAM_->LoadMap(argument);
+    //     }
+    //     else{
+    //         std::cout << "enter file path after command" << std::endl;
+    //     }
+    // }
+    if(command == "Shutdown"){
+        // Delete sync thread
+        syncThread_->join();
+        delete syncThread_;
+        SLAM_->DeactivateLocalizationMode();
+
+        // Stop all threads
+        SLAM_->Shutdown();
+
+        // Save camera trajectory
+        SLAM_->SaveTrajectoryEuRoC("CameraTrajectory.txt");
+        SLAM_->SaveKeyFrameTrajectoryEuRoC("KeyFrameTrajectory.txt");
+    }
+    else if(command == "LocalizationMode"){
+        SLAM_->ActivateLocalizationMode();
+    }
+    else if(command == "TrackingMode"){
+        SLAM_->DeactivateLocalizationMode();
+    }
+    else if(command == "Reset"){
+        SLAM_->Reset();
+    }
+    else{
+        std::cout << "Error: Enter valid command: [Shutdown; LocalizationMode; TrackingMode; Reset]" << std::endl;
+    }
 }
 
 void StereoSlamNode::GrabStereo(const ImageMsg::SharedPtr msgLeft, const ImageMsg::SharedPtr msgRight)
 {
-    //std::cout << "grabbing image" << std::endl;
-    // Copy the ros rgb image message to cv::Mat.
+    //grab left image
+    bufMutexLeft_.lock();
+
+    if (!imgLeftBuf_.empty())
+        imgLeftBuf_.pop();
+    imgLeftBuf_.push(msgLeft);
+
+    bufMutexLeft_.unlock();
+
+    //grab right image
+    bufMutexRight_.lock();
+
+    if (!imgRightBuf_.empty())
+        imgRightBuf_.pop();
+    imgRightBuf_.push(msgRight);
+
+    bufMutexRight_.unlock();
+}
+
+// void StereoSlamNode::GrabImageLeft(const ImageMsg::SharedPtr msgLeft)
+// {
+//     bufMutexLeft_.lock();
+
+//     if (!imgLeftBuf_.empty())
+//         imgLeftBuf_.pop();
+//     imgLeftBuf_.push(msgLeft);
+
+//     bufMutexLeft_.unlock();
+// }
+
+// void StereoSlamNode::GrabImageRight(const ImageMsg::SharedPtr msgRight)
+// {
+//     bufMutexRight_.lock();
+
+//     if (!imgRightBuf_.empty())
+//         imgRightBuf_.pop();
+//     imgRightBuf_.push(msgRight);
+
+//     bufMutexRight_.unlock();
+// }
+
+cv::Mat StereoSlamNode::GetImage(const ImageMsg::SharedPtr msg)
+{
+    // Copy the ros image message to cv::Mat.
+    cv_bridge::CvImageConstPtr cv_ptr;
+
     try
     {
-        cv_ptrLeft = cv_bridge::toCvShare(msgLeft);
-        //cv::imshow("test window left", cv_ptrLeft->image);
+        cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
     }
-    catch (cv_bridge::Exception& e)
+    catch (cv_bridge::Exception &e)
     {
-        std::cout << "cv_bridge left error" << std::endl;
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-        return;
     }
 
-    // Copy the ros depth image message to cv::Mat.
-    try
+    if (cv_ptr->image.type() == 0)
     {
-        cv_ptrRight = cv_bridge::toCvShare(msgRight);
-        //cv::imshow("test window right", cv_ptrRight->image);
-    }
-    catch (cv_bridge::Exception& e)
-    {
-        std::cout << "cv_bridge right error" << std::endl;
-        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-        return;
-    }
-
-    if (doRectify){
-        cv::Mat imLeft, imRight;
-        cv::remap(cv_ptrLeft->image,imLeft,M1l,M2l,cv::INTER_LINEAR);
-        cv::remap(cv_ptrRight->image,imRight,M1r,M2r,cv::INTER_LINEAR);
-        m_SLAM->TrackStereo(imLeft, imRight, Utility::StampToSec(msgLeft->header.stamp));
+        return cv_ptr->image.clone();
     }
     else
     {
-        //std::cout << "doing SLAM" << std::endl;
-        //std::cout << Utility::StampToSec(msgLeft->header.stamp) << std::endl;
-        m_SLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, Utility::StampToSec(msgLeft->header.stamp));
+        std::cerr << "Error image type" << std::endl;
+        return cv_ptr->image.clone();
     }
+}
+
+void StereoSlamNode::SyncWithImu()
+{
+    const double maxTimeDiff = 0.01;
+
+    while (1)
+    {
+        cv::Mat imLeft, imRight;
+        double tImLeft = 0, tImRight = 0;
+        if (!imgLeftBuf_.empty() && !imgRightBuf_.empty())
+        {
+            tImLeft = Utility::StampToSec(imgLeftBuf_.front()->header.stamp);
+            tImRight = Utility::StampToSec(imgRightBuf_.front()->header.stamp);
+
+            bufMutexRight_.lock();
+            while ((tImLeft - tImRight) > maxTimeDiff && imgRightBuf_.size() > 1)
+            {
+                imgRightBuf_.pop();
+                tImRight = Utility::StampToSec(imgRightBuf_.front()->header.stamp);
+            }
+            bufMutexRight_.unlock();
+
+            bufMutexLeft_.lock();
+            while ((tImRight - tImLeft) > maxTimeDiff && imgLeftBuf_.size() > 1)
+            {
+                imgLeftBuf_.pop();
+                tImLeft = Utility::StampToSec(imgLeftBuf_.front()->header.stamp);
+            }
+            bufMutexLeft_.unlock();
+
+            if ((tImLeft - tImRight) > maxTimeDiff || (tImRight - tImLeft) > maxTimeDiff)
+            {
+                std::cout << "big time difference" << std::endl;
+                continue;
+            }
+
+            bufMutexLeft_.lock();
+            imLeft = GetImage(imgLeftBuf_.front());
+            imgLeftBuf_.pop();
+            bufMutexLeft_.unlock();
+
+            bufMutexRight_.lock();
+            imRight = GetImage(imgRightBuf_.front());
+            imgRightBuf_.pop();
+            bufMutexRight_.unlock();
+
+
+
+            if (bClahe_)
+            {
+                clahe_->apply(imLeft, imLeft);
+                clahe_->apply(imRight, imRight);
+            }
+
+            if (doRectify_)
+            {
+                cv::remap(imLeft, imLeft, M1l_, M2l_, cv::INTER_LINEAR);
+                cv::remap(imRight, imRight, M1r_, M2r_, cv::INTER_LINEAR);
+            }
+
+            pose = SLAM_->TrackStereo(imLeft, imRight, tImLeft);
+
+            std::chrono::milliseconds tSleep(1);
+            std::this_thread::sleep_for(tSleep);
+        }
+    }
+}
+
+void StereoSlamNode::Publish(){
+    
+
+    // POINT CLOUD
+    //std::cout << "trying to get map" << std::endl;
+    std::vector<ORB_SLAM3::MapPoint*> pActiveMapPoints = SLAM_->GetAllMapPoints();
+    if(pActiveMapPoints.empty()){
+        cout << endl << "Vector of map points pActiveMap is empty!" << endl;
+        return;
+    }
+
+    //std::cout << "got map" << std::endl;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
+    //std::cout << "created tmp" << std::endl;
+    PointCloudMsg message;
+    //std::cout << "created message" << std::endl;
+    tmp->width = 0;
+    tmp->height = 1;
+    tmp->is_dense = false;
+    tmp->points.resize(tmp->width * tmp->height);
+    tmp->header.frame_id = "world";
+    //std::cout << "set tmp parameters" << std::endl;
+    for (int i = 0; i < pActiveMapPoints.size(); i++)
+    {
+        Eigen::Vector3f point = pActiveMapPoints[i]->GetWorldPos();
+        pcl::PointXYZ pt;
+        pt.x = point.x();
+        pt.y = point.y();
+        pt.z = point.z();
+        tmp->points.push_back(pt);
+        tmp->width++;
+    }
+    
+    //std::cout << "converted map" << std::endl;
+    pcl::toROSMsg(*tmp.get(), message);
+    pubPointCloud_->publish(message);
+	std::cout << "Published map" << std::endl;
+
+
+    // // Publish pose data
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+    pose_msg.header.frame_id = "world";
+    
+    Eigen::Quaternion<double> R = pose.unit_quaternion().cast<double>();
+    Eigen::Matrix<double, 3, 1> T = pose.translation().cast<double>();
+    g2o::SE3Quat quat = g2o::SE3Quat(R, T);
+    Eigen::Matrix<double, 7, 1, 0, 7, 1> quaternion = quat.inverse().toVector();
+    pose_msg.pose.position.x = quaternion[0];
+    pose_msg.pose.position.y = quaternion[1];
+    pose_msg.pose.position.z = quaternion[2];
+    pose_msg.pose.orientation.x = quaternion[3];
+    pose_msg.pose.orientation.y = quaternion[4];
+    pose_msg.pose.orientation.z = quaternion[5];
+    pose_msg.pose.orientation.w = quaternion[6];
+    pubPos_->publish(pose_msg);
+    std::cout << "Published pose" << std::endl;
+
+    
+
+
+    //publish path
+    std::vector<ORB_SLAM3::KeyFrame*> KeyFrames = SLAM_->GetAllKeyFrames();
+        if(KeyFrames.empty()){
+        cout << endl << "Vector of KeyFrames is empty!" << endl;
+        return;
+    }
+    pcl::PointCloud<pcl::PointXYZ>::Ptr tmp2(new pcl::PointCloud<pcl::PointXYZ>);
+    PointCloudMsg PathMessage;
+    tmp2->width = 0;
+    tmp2->height = 1;
+    tmp2->is_dense = false;
+    tmp2->points.resize(tmp2->width * tmp2->height);
+    tmp2->header.frame_id = "world";
+    for (int i = 0; i < KeyFrames.size(); i++)
+    {
+        Eigen::Vector3<float> point = KeyFrames[i]->GetCameraCenter();
+        pcl::PointXYZ pt;
+        pt.x = point(0);
+        pt.y = point(1);
+        pt.z = point(2);
+        tmp2->points.push_back(pt);
+        tmp2->width++;
+    }
+    
+    //std::cout << "converted map" << std::endl;
+    pcl::toROSMsg(*tmp2.get(), PathMessage);
+    pubPath->publish(PathMessage);
+    std::cout << "Published path" << std::endl;
+
+
 }

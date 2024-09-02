@@ -86,7 +86,7 @@ StereoInertialNode::~StereoInertialNode()
     // Stop all threads
     SLAM_->Shutdown();
 
-    // Save camera trajectory
+    SLAM_->SaveTrajectoryEuRoC("CameraTrajectory.txt");
     SLAM_->SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
 }
 
@@ -104,26 +104,26 @@ void StereoInertialNode::GetCommand(const StrMsg::SharedPtr msg){
     
     std::cout << "Received command: "<< command << " with argument: " << argument << std::endl;
 
-    if(command== "SaveMap"){
-        if(argument.size()>1){
-            SLAM_->SavePointCloud(argument);
-        }
-        else{
-            std::cout << "enter file path after command" << std::endl;
-        }
-    }
-    else if(command == "LoadMap"){
-        if(argument.size()>1){
-            SLAM_->LoadMap(argument);
-        }
-        else{
-            std::cout << "enter file path after command" << std::endl;
-        }
-    }
-    else if(command == "Shutdown"){
-        // // Delete sync thread
-        // syncThread_->join();
-        // delete syncThread_;
+    // if(command== "SaveMap"){
+    //     if(argument.size()>1){
+    //         SLAM_->SavePointCloud(argument);
+    //     }
+    //     else{
+    //         std::cout << "enter file path after command" << std::endl;
+    //     }
+    // }
+    // else if(command == "LoadMap"){
+    //     if(argument.size()>1){
+    //         SLAM_->LoadMap(argument);
+    //     }
+    //     else{
+    //         std::cout << "enter file path after command" << std::endl;
+    //     }
+    // }
+    if(command == "Shutdown"){
+        // Delete sync thread
+        syncThread_->join();
+        delete syncThread_;
         SLAM_->DeactivateLocalizationMode();
 
         // Stop all threads
